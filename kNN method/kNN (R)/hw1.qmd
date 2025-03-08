@@ -1,0 +1,111 @@
+---
+title: "hw1"
+format: pdf
+---
+
+# Libraries
+
+```{r}
+#| code-summary: Libraries
+#| code-fold: true
+library <- function(...) {suppressPackageStartupMessages(base::library(...))}
+if (!require(caret)) install.packages("caret"); library(caret)
+if (!require(dplyr)) install.packages("dplyr"); library(dplyr)
+```
+
+# Starting point
+
+We would like to use kNN method for recognizing the type of iris (class label *versicolor* or *virginica*). The predictors include:
+
+- Sepal.Length
+- Sepal.Width
+- Petal.Length
+-Petal.Width
+
+The objective of the analysis is to find a model that can be used to predict the type of the flower based on features. Also we will use extensive search approach to identify a good k for the task.
+
+# Data management
+
+```{r}
+dat <- read.csv('iris.csv') |> filter(Species %in% c("virginica", "versicolor"))
+dat$Species <- as.factor(dat$Species)
+dat |> head()
+```
+
+# Summary statistics
+
+```{r}
+summary(dat)
+```
+ Both class labels includes 50 observations. 
+ 
+# Model creation and diagnostics
+
+## Train-Test-Split
+
+We will use 70% of the data as training part and 30% as testing part.
+```{r}
+set.seed(1)
+N = nrow(dat)
+train_ind = sample(N, size = N * 70/100)
+test_ind = setdiff(1:N, train_ind)
+train_data = dat[train_ind,]
+test_data = dat[test_ind,]
+```
+
+## Fit model
+
+```{r}
+knn_model <- train(
+  Species ~ .,
+  data = train_data,
+  method = "knn",
+  tuneGrid = data.frame(k = 5)
+)
+```
+
+## Make predictions
+
+```{r}
+predictions <- predict(knn_model, newdata = test_data)
+```
+
+## Accuracy for N=5
+
+```{r}
+# Calculate accuracy
+confusion_matrix <- confusionMatrix(predictions, test_data$Species)
+accuracy_r <- confusion_matrix$overall['Accuracy']
+print(paste("kNN (5) Accuracy:", round(accuracy_r, 3)))
+print(paste("kNN (5) Error rate:", round(1-accuracy_r,3)))
+```
+
+## 
+
+```{r}
+set.seed(1)
+k_values <- 1:25
+error_rate <- numeric(length(k_values))
+
+for (i in k_values) {
+  knn_model <- train(
+    Species ~ .,
+    data = train_data,
+    method = "knn",
+    tuneGrid = data.frame(k = k_values[i])
+  )
+  predictions <- predict(knn_model, newdata = test_data)
+  confusion_matrix <- confusionMatrix(predictions, test_data$Species)
+  error_rate[i] <- 1-confusion_matrix$overall['Accuracy']
+}
+
+# Plotting the accuracies
+plot_data <- data.frame(k = k_values, ErrorRate = error_rate)
+ggplot(plot_data, aes(x = k, y = ErrorRate)) +
+  geom_line(aes(group = 1)) +
+  geom_point() +
+  scale_x_continuous(breaks = k_values) +
+  labs(title = "kNN ErrorRate vs. k", x = "k", y = "ErrorRate") +
+  theme_minimal()
+```
+We should consider odd numbers. It make sense to use 1 as good k because the error rate is very small (less then 4%), but the model achieve the absolute 0 error rate when k=3, so it is the best k for our purpose.  
