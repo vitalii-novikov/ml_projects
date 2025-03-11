@@ -1,0 +1,40 @@
+---
+title: "NeuralNetwork_Novikov"
+author: "Vitalii Novikov"
+format: pdf
+---
+
+
+
+# Libraries
+
+```{r}
+#| code-summary: Libraries
+#| code-fold: true
+library <- function(...) {suppressPackageStartupMessages(base::library(...))}
+if (!require(caret)) install.packages("caret"); library(caret)
+if (!require(neuralnet)) install.packages("neuralnet"); library(neuralnet)
+if (!require(mlbench)) install.packages("mlbench"); library(mlbench)
+if (!require(dplyr)) install.packages("dplyr"); library(dplyr)
+```
+
+# Starting point
+
+We would like to use kNN method for recognizing the type of iris (class label *versicolor* or *virginica*). The predictors include:
+
+- Sepal.Length
+- Sepal.Width
+- Petal.Length
+-Petal.Width
+
+The objective of the analysis is to find a model that can be used to predict the type of the flower based on features. Also we will use extensive search approach to identify a good k for the task.
+
+
+# Data management
+
+```{r}
+data("BreastCancer", package = "mlbench")
+BreastCancer |> head()
+```
+
+
