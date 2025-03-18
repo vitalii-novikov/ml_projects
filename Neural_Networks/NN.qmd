@@ -1,0 +1,411 @@
+---
+title: "NeuralNetwork_Novikov"
+author: "Vitalii Novikov"
+format: pdf
+toc: true
+---
+
+
+
+# Libraries
+
+```{r}
+#| code-summary: Libraries
+#| code-fold: true
+library <- function(...) {suppressPackageStartupMessages(base::library(...))}
+if (!require(caret)) install.packages("caret"); library(caret)
+if (!require(neuralnet)) install.packages("neuralnet"); library(neuralnet)
+if (!require(mlbench)) install.packages("mlbench"); library(mlbench)
+if (!require(dplyr)) install.packages("dplyr"); library(dplyr)
+library(plyr) 
+```
+
+# Starting point
+
+We would like to use Neural Network to predict the diagnosis (Benign or Malignant based on 10 features: 
+- radius (mean of distances from center to points on the perimeter)
+- texture (standard deviation of gray-scale values)
+- perimeter
+- area
+- smoothness (local variation in radius lengths)
+- compactness (perimeter^2 / area - 1.0)
+- concavity (severity of concave portions of the contour)
+- concave points (number of concave portions of the contour)
+- symmetry
+- fractal dimension ("coastline approximation" - 1)
+
+
+# Data management
+
+First the data is collected from package "mlbench".
+```{r}
+data("BreastCancer", package = "mlbench")
+BreastCancer |> head()
+```
+But it is wrong dataset.
+
+Get another:
+
+```{r}
+dat <- read.csv("data.csv")
+glimpse(dat)
+```
+
+
+```{r}
+nrow(dat)
+```
+
+This dataset include 569 observations. We will only use the “worst-features” for creating neural network. 
+
+## Pick useful predictors
+
+```{r}
+clean_data <- as_tibble(dat[c(2,23:32)])
+clean_data <- mutate(clean_data,
+  diagnosis = case_match(diagnosis, "M" ~ "malignant", "B"~ "benign")
+   ) %>% mutate_if(is.character, as.factor)
+#clean_data[['diagnosis']] <- as.factor(clean_data[['diagnosis']])
+clean_data |> head(2)
+```
+
+```{r}
+clean_data |> apply(2, function(x) sum(is.na(x)))
+```
+There is no missing data, good.
+
+## Normalize the data
+
+All predictors have their own scales. We should perform min-max-normalization.
+
+```{r}
+clean_data |> summary()
+```
+
+```{r}
+maxs <- apply(clean_data[-1], 2, max) 
+mins <- apply(clean_data[-1], 2, min)
+
+scaled_data <- scale(clean_data[-1], center = mins, scale = maxs - mins) %>%
+  cbind(clean_data[1])
+
+summary(scaled_data)
+```
+Now we have all predictors in the same scale.
+
+## Balance of the data
+
+```{r}
+#custom function to create pie chart
+pie_with_percentages <- function(diag_list, main = "Diagnosis", round = 1) {
+  diag_table <- table(diag_list)
+  diag_percentages <- prop.table(diag_table) * 100
+  labels <- paste(names(diag_table), "\n", round(diag_percentages, round), "%")
+  return(pie(diag_table, labels = labels, main = main))
+}
+
+pie_with_percentages(scaled_data$diagnosis)
+```
+Our dataset do not show the perfect balance of diagnosis, but it is still not that bad as 90/10 or 99/1 split. Neural networks, by default, tend to favor the majority class. This means the model might become biased towards predicting "benign," potentially leading to poor performance in identifying "malignant" cases. 
+
+In the next step stratified data set will be created to minimize the potential bias.
+
+## Stratified data set
+
+### Using 'sample' function
+
+```{r}
+set.seed(230)
+index <- sample(1:nrow(scaled_data),round(0.8*nrow(scaled_data)))
+train_data <- scaled_data[index,]
+test_data <- scaled_data[-index,]
+
+layout(matrix(c(1,2,3), nrow = 1), respect = TRUE)
+pie_with_percentages(train_data$diagnosis, main = "train_data")
+pie_with_percentages(test_data$diagnosis, main = "test_data")
+pie_with_percentages(clean_data$diagnosis, main = "original_data")
+layout(1)
+```
+The test data show slightly lowest proportion of malignant then both train and original data, but it is still very close to actual picture.
+
+### Using caret library
+
+```{r}
+set.seed(123)
+index_2 <- createDataPartition(scaled_data$diagnosis, p = 0.8, list = FALSE)
+
+train_data_2 <- scaled_data[index_2,]
+test_data_2 <- scaled_data[-index_2,]
+
+layout(matrix(c(1,2,3), nrow = 1), respect = TRUE)
+pie_with_percentages(train_data_2$diagnosis, main = "train_data_2", round = 2)
+pie_with_percentages(test_data_2$diagnosis, main = "test_data_2", round = 2)
+pie_with_percentages(clean_data$diagnosis, main = "original_data", round = 2)
+```
+In this case we got really stratified train and test split of the data, because the proportions of
+classes are almost the same in each dataset. For further steps we will use this split of the data.
+
+```{r}
+trainD <- train_data_2
+testD <- test_data_2
+
+split_description <- t(rbind(
+  data.frame("trainD" = nrow(trainD), "testD" = nrow(testD)),
+  c(round(nrow(trainD)/nrow(clean_data)*100,2), 
+    round(nrow(testD)/nrow(clean_data)*100,2))
+)) 
+colnames(split_description) <- c("nrow","percentage (%)")
+split_description
+```
+
+The trainD include 456 rows, which is 80.14% of the original dataset.
+
+# Hyperparameters tuning
+
+## First NN
+
+```{r}
+set.seed(1)
+model1 <- neuralnet(diagnosis ~ . , data = trainD, hidden = c(5,3), linear.output=FALSE)
+plot(model1)
+```
+As an example of NN the model with 2 hidden layers (with 5 and 3 neurons) were created.
+The black lines show the connections between each layer and the weights on each connection while the blue lines show the bias term added in each step.
+
+## Model evaluation
+
+The most interesting thing to explore after creating classification model is confusion matrix.
+But in this step the real test data were used to evaluate the model. For further steps the validation data will be crated.
+```{r}
+pred <- neuralnet::compute(model1, testD[, -11])$net.result
+
+labels <- c("benign", "malignant")
+prediction_label <- (data.frame(max.col(pred)) %>%     
+  mutate(pred=labels[max.col.pred.]))[2] %>%
+  unlist()
+
+table(testD$diagnosis, prediction_label)
+```
+The confusion matrix shows that the model made 4 mistakes.
+
+```{r}
+check = as.numeric(testD$diagnosis) == max.col(pred)
+accuracy = (sum(check)/nrow(testD))*100
+print(accuracy)
+```
+Therefore the accuracy is about 96.5%.
+
+But we would like to use **cross-entropy** as the error function.
+There is no ready-to-use *cross-entropy loss* function in neuralnet, therefore we should calculate loss manually. 
+
+
+```{r}
+true_one_hot <- testD["diagnosis"] %>% 
+  mutate(diagnosis = case_match(diagnosis,
+    "malignant" ~ 0, 
+    "benign" ~ 1
+)) 
+
+cross_entropy <- -sum(true_one_hot * log(pred)) / nrow(testD) 
+cross_entropy
+```
+
+It is hard to interpret this number, because it is not a direct loss function like RSME. But we would like to minimize Cross Entropy when compare models.
+
+## Change hidden level parameters 
+
+First, the 5 fold stratified data split is created.
+```{r}
+set.seed(321)
+folds <- createFolds(trainD$diagnosis, k = 5, list = TRUE, returnTrain = FALSE)
+```
+
+
+```{r}
+possible_levels <- c(1,2)
+possible_neurons <- 2:5
+validation_table <- data.frame(hidden_levels=integer(0), 
+                               l1_neurons=integer(0),
+                               l2_neurons=integer(0),
+                               ce1=numeric(0),
+                               ce2=numeric(0),
+                               ce3=numeric(0),
+                               ce4=numeric(0),
+                               ce5=numeric(0),
+                               cross_entropy_avg=numeric(0),
+                               accuracy_avg=numeric(0))
+
+# 1 hidden level loop
+for(n in possible_neurons){
+  accuracy_list = numeric(0)
+  cross_entropy_list = numeric(0)
+  for(i in 1:5) {
+    test_index <- folds[[i]]
+    train_fold <- trainD[-test_index, ]
+    test_fold <- trainD[test_index, ]
+    set.seed(5)
+    model_nn <- neuralnet(diagnosis ~ . , data = train_fold, hidden = n, linear.output=FALSE)
+    pred <- neuralnet::compute(model_nn, test_fold[, -11])$net.result
+    #ce
+    true_one_hot <- test_fold["diagnosis"] %>% 
+    mutate(diagnosis = case_match(diagnosis,
+        "malignant" ~ 0, 
+        "benign" ~ 1
+    )) 
+    cross_entropy_list[i] <- -sum(true_one_hot * log(pred)) / nrow(test_fold) 
+    #ac
+    check = as.numeric(test_fold$diagnosis) == max.col(pred)
+    accuracy_list[i] <- (sum(check)/nrow(test_fold))*100
+  }
+  validation_table[nrow(validation_table) + 1, ] <- c(1, n, NA, 
+                                                      cross_entropy_list, 
+                                                      mean(cross_entropy_list), 
+                                                      mean(accuracy))
+}
+# 2 hidden levels loop
+for(n1 in possible_neurons){
+  for(n2 in possible_neurons){
+    accuracy_list = numeric(0)
+    cross_entropy_list = numeric(0)
+    for(i in 1:5) {
+      test_index <- folds[[i]]
+      train_fold <- trainD[-test_index, ]
+      test_fold <- trainD[test_index, ]
+      set.seed(5)
+      model_nn <- neuralnet(diagnosis ~ . , data = train_fold, hidden = c(n1,n2), linear.output=FALSE)
+      pred <- neuralnet::compute(model_nn, test_fold[, -11])$net.result
+      #ce
+      true_one_hot <- test_fold["diagnosis"] %>% 
+      mutate(diagnosis = case_match(diagnosis,
+          "malignant" ~ 0, 
+          "benign" ~ 1
+      )) 
+      cross_entropy_list[i] <- -sum(true_one_hot * log(pred)) / nrow(test_fold) 
+      #ac
+      check = as.numeric(test_fold$diagnosis) == max.col(pred)
+      accuracy_list[i] = (sum(check)/nrow(test_fold))*100
+    }
+    validation_table[nrow(validation_table) + 1, ] <- c(2, n1, n2, 
+                                                      cross_entropy_list, 
+                                                      mean(cross_entropy_list), 
+                                                      mean(accuracy_list))
+  }
+}
+
+apply(validation_table,2 ,function(x) round(x,2))
+```
+Somehow cross entropy for the 4th fold is 0
+
+Recheck it:
+```{r}
+validation_table$ce4
+```
+
+It is not 0 in most cases, but very close to zero.
+
+```{r}
+vt <- validation_table %>% mutate(
+  node = case_when(
+    hidden_levels==1 ~ paste0("(",l1_neurons,")"),
+    hidden_levels==2 ~ paste0("(",l1_neurons,",",l2_neurons,")")
+    ) 
+)
+vt$node <- factor(vt$node, levels = vt$node)
+vt[c("node", "cross_entropy_avg", "accuracy_avg")] %>% 
+  sort_by(vt$cross_entropy_avg) %>% 
+  head() %>% knitr::kable()
+```
+This table represents lowest cross_entropy_avg for models. 
+
+The neural network with hyperparametres (4,4) shows the lowest cross entropy loss. This model will be used for further steps.
+
+```{r}
+plot(1:length(vt$node), vt$cross_entropy_avg, type = "b", 
+     xlab = "Node", ylab = "Cross Entropy", 
+     main = "Cross Entropy per Node", xaxt = "n")
+
+axis(1, at = 1:length(vt$node), labels = vt$node)
+```
+
+There is no special pattern in cross_entropy_avg when the number of neurons increases.
+
+```{r}
+plot(1:length(vt$node), vt$accuracy_avg, type = "b", 
+     xlab = "Node", ylab = "accuracy", 
+     main = "accuracy per Node", xaxt = "n")
+
+axis(1, at = 1:length(vt$node), labels = vt$node)
+```
+
+The accuracy flactuates between 96 and 97 in most cases, but for (3,4) and (4,3) it becomes larger then 97, whereas (4,4) nn shows the lowest accuracy within networks (96.05).
+
+
+```{r}
+plot(x=vt$accuracy_avg, y=vt$cross_entropy_avg)
+text(x = vt$accuracy_avg, y = vt$cross_entropy_avg, labels = vt$node, pos = 2, cex = 0.5)
+```
+
+Another possible neural network, that could be good choice for using is nn with 2 hidden layers and (4,3) neurons on these layers, because it is the closest to right bottom corner, which means that the model shows good balance of accuracy and loss function.
+
+But we would like to choose the model with the lowest cross entropy loss, so the (4,4) is a winning model.
+
+
+# Final model
+
+## Train & test model
+
+Now the whole trainD set is used for training.
+
+```{r}
+set.seed(2)
+nn <- neuralnet(diagnosis ~ . , data = testD, hidden = c(4,4), linear.output=FALSE)
+pred <- neuralnet::compute(nn, testD[, -11])$net.result
+#ce
+true_one_hot <- testD["diagnosis"] %>% 
+mutate(diagnosis = case_match(diagnosis,
+    "malignant" ~ 0, 
+    "benign" ~ 1
+)) 
+cross_entropy <- -sum(true_one_hot * log(pred)) / nrow(testD) 
+#ac
+check = as.numeric(testD$diagnosis) == max.col(pred)
+accuracy = (sum(check)/nrow(testD))*100
+
+# confusion matrix
+labels <- c("benign", "malignant")
+prediction_label <- (data.frame(max.col(pred)) %>%     
+    mutate(pred=labels[max.col.pred.]))[2] %>%
+    unlist()
+
+table(testD$diagnosis, prediction_label)
+```
+The confusion matrix shows that the model performed with flying colors, because there is no false negative and false positive predictions
+```{r}
+print(paste0("Accuracy: ",accuracy,"%"))
+print(paste0("Cross Entropy: ",round(cross_entropy,4)))
+```
+
+So, the accuracy is 100%, while the loss is very comparing to models that were on previous steps.
+
+## Model vizualization
+
+```{r}
+
+png("neuralnet_plot.png")
+plot(nn, col.hidden = "orange", fontsize = 10, information.pos = 0.25)
+knitr::include_graphics("neuralnet_plot.png")
+```
+
+The black lines show the connections between each layer and the weights on each connection, while the blue lines show the bias term added at each step. The black neurons on the left are inputs, and the black neurons on the right are outputs. Orange neurons are part of the hidden layers.
+
+# Problem of overfitting
+
+Overfitting means a neural network performs well on training data, poorly on unseen data. It memorizes, not generalizes. The detection of it can be via comparing training and validation performance, because a large gap between them indicates overfitting. 
+Some ways to prevent overfitting: 
+- Early stopping (of course with monitoring validation loss) 
+- Regularization (L1/L2), but it reduces model complexity
+- Dropinng randomly disables neurons
+- Expandding the dataset to enhance the variety of training data.
+
+There is no problem with overfitting in the final model, but sometimes neural networks tend to be overfited especially if the data is not balanced. In this case the balance of resulting class is 37/63, which is not so bad. Also we used stratified split to perform as good as possible. 
+

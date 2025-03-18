@@ -1,0 +1,356 @@
+---
+title: "Performance Assessment"
+author: "David Meyer"
+date: "16.3.2022"
+output:
+  pdf_document: 
+    latex_engine: xelatex
+    number_sections: yes
+    toc: yes
+  html_notebook: default
+---
+
+---
+
+```{r}
+library("mosaicData")
+library("caret")
+library("e1071")
+library("ROCR")
+```
+
+---
+
+
+# Create data partitions
+
+```{r}
+library(caret)
+data("RailTrail")
+set.seed(4711)
+```
+
+## Train/Test-split
+
+```{r}
+part = createDataPartition(RailTrail$volume, times = 2, p = 2/3)
+part
+```
+
+```{r}
+train = RailTrail[part$Resample1,]
+test  = RailTrail[-part$Resample1,]
+```
+
+## Cross-Validation
+
+```{r}
+createFolds(RailTrail$volume, k = 5)
+```
+
+With repetitions:
+
+```{r}
+createMultiFolds(RailTrail$volume, k = 2, times = 3)
+```
+
+## Bootstrap
+
+```{r}
+createResample(RailTrail$volume, times = 3)
+```
+
+# Regression
+
+## Create train/test samples
+
+```{r}
+part = createDataPartition(RailTrail$volume, times = 2, p = 2/3)
+train = RailTrail[part$Resample1,]
+test  = RailTrail[-part$Resample1,]
+```
+
+## Train
+
+```{r}
+model_lm = lm(volume ~ hightemp, data = train)
+model_knnreg = gknn(volume ~ hightemp, data = train)
+```
+
+## Predict test set data
+
+```{r}
+pred_lm = predict(model_lm, test)
+pred_knnreg = predict(model_knnreg, test)
+```
+
+## Evaluate
+
+```{r}
+rbind(lm  = postResample(pred_lm, test$volume), 
+      knn = postResample(pred_knnreg, test$volume))
+```
+
+# Classification
+
+## Create train/test samples
+
+Bootstrap
+
+```{r}
+ind   = createResample(iris$Species, times = 1)
+train = iris[ind$Resample1,] ## 150 cases!
+test  = iris[-ind$Resample1,] ## only those not in train set
+nrow(train)
+nrow(test)
+```
+
+## Train models
+
+```{r}
+model_nb = naiveBayes(Species ~ ., data = train)
+model_knn = gknn(Species ~ ., data = train)
+```
+
+## Predict test set data
+
+```{r}
+pred_nb = predict(model_nb, test)
+pred_knn = predict(model_knn, test, type = "class")
+```
+
+## Evaluate
+
+```{r}
+rbind(nb  = postResample(pred_nb, test$Species), 
+      knn = postResample(pred_knn, test$Species))
+```
+
+# Performance Evaluation for Classifiers
+
+## Confusion Matrix for true/predicted values
+
+```{r}
+confusionMatrix(pred_knn, test$Species, mode = "prec_recall")
+```
+
+```{r}
+confusionMatrix(pred_knn, test$Species)
+```
+
+## Confusion matrix for a given fourfold-table
+
+```{r}
+pred = c(T, T, F, F, T, T, F, F, T, F)
+true = c(T, T, F, F, F, F, F, T, T, F)
+tab = table(pred, true)
+confusionMatrix(tab, positive = "TRUE")
+```
+
+# Calibration plots for probability-based classifiers
+
+## Bank marketing data
+
+Bank data: Response to marketing campaign for some bank product (term deposit)
+
+```{r}
+dat = read.table("bank.csv", sep = ";", header = TRUE, stringsAsFactors = TRUE)
+head(dat)
+summary(dat)
+
+part = createDataPartition(dat$y, times = 1, p = 2/3)
+train = dat[part$Resample1,]
+test  = dat[-part$Resample1,]
+```
+
+## Fit NaiveBayes-Model
+
+```{r}
+head(train)
+model = naiveBayes(y ~ ., data = train)
+
+## Performance on test set
+confusionMatrix(predict(model, test), test$y, positive = "yes")
+```
+
+Note: model useless since accuracy ~ NIR
+
+## Calibrate classifier using ROC
+
+Create probabilities for predictions on *validation* set:
+
+```{r}
+part = createDataPartition(train$y, times = 1, p = 2/3)
+train_sub = train[part$Resample1,]
+validation = train[-part$Resample1,]
+model = naiveBayes(y ~ ., data = train_sub)
+
+## use "yes" column
+prob = predict(model, validation, type = "raw")[,"yes"]
+```
+
+## ROC-curve
+
+```{r}
+predobj = prediction(prob, validation$y, label.ordering = c("no", "yes"))
+perf = performance(predobj, "tpr", "fpr")
+plot(perf, colorize = TRUE, print.cutoffs.at = seq(0.1, 1, 0.2))
+
+## AUC-value:
+performance(predobj, "auc")@y.values
+```
+
+Choose Cutoff 0.2 and compute performance again on test set:
+
+```{r}
+pred = predict(model, test, type = "raw")[,2] > 0.2
+confusionMatrix(table(pred, test$y == "yes"), positive = "TRUE")
+```
+
+Better tradeoff between sensitivity and specificity.
+
+## Sensitivity-Specificity-Curve
+
+Actually, same than ROC-curve (X-axis flipped)
+
+```{r}
+perf = performance(predobj, "sens", "spec")
+plot(perf, colorize = TRUE, print.cutoffs.at = seq(0.1, 1, 0.2))
+
+```
+
+## Recall-Precision-Curve
+
+```{r}
+perf = performance(predobj, "prec", "rec")
+plot(perf, colorize = TRUE, print.cutoffs.at = seq(0.1, 1, 0.2))
+
+```
+
+## Cumulative Response Curve
+
+```{r}
+perf = performance(predobj, "tpr", "rpp")
+plot(perf, colorize = TRUE, print.cutoffs.at = seq(0.1, 1, 0.2))
+abline(a = 0, b = 1)
+```
+
+## Lift chart
+
+```{r}
+perf = performance(predobj, "lift", "rpp")
+plot(perf, colorize = TRUE, print.cutoffs.at = seq(0.1, 1, 0.2))
+
+```
+
+# Tuning hyperparameters
+
+__Note:__ In the following examples, we use the whole data set for tuning for simplicity. In real applications, create training/test sets first and perform tuning only on _training_ set, using part of it as _validation_ set!
+
+```{r}
+set.seed(4711)
+model_knn = train(Species ~ ., data = iris, "knn",
+                  preProcess = c("scale", "center"),
+                  trControl = trainControl(method = "boot"),
+                  tuneGrid = data.frame(k = 1:10))
+model_knn
+```
+
+```{r}
+plot(model_knn)
+```
+
+The tuning was performed on the 25 bootstrap samples.
+
+Average confusion matrix for best model:
+
+```{r}
+confusionMatrix(model_knn)
+```
+
+Trick to get measures:
+
+```{r}
+tab = trunc(confusionMatrix(model_knn)$table)
+confusionMatrix(tab)
+```
+
+Use best model:
+
+```{r}
+predict(model_knn, iris[1:5,-5])
+```
+
+# Automatic sampling, training & tuning
+
+See `?models` for a list of available models in caret.
+
+## Fitting models
+
+```{r}
+set.seed(4711) # set seed for all models!
+model_lm = train(volume ~ hightemp, method = "lm", data = RailTrail)
+model_lm
+```
+
+```{r}
+set.seed(4711) # use same seed for all models!
+model_knn = train(volume ~ hightemp, method = "knn", data = RailTrail,
+                  preProcess = c("scale", "center"),
+                  tuneGrid = data.frame(k = 1:10))
+model_knn
+```
+
+## Model comparison
+
+### side-by-side
+
+```{r}
+res = resamples(list(knn = model_knn, lm = model_lm))
+```
+
+```{r}
+summary(res)
+```
+
+Compare graphically:
+
+```{r}
+bwplot(res)
+```
+
+### Pairwise:
+
+t-test for differences:
+
+```{r}
+summary(diff(res))
+```
+
+Correlation plot:
+
+```{r}
+xyplot(res, metric = "RMSE")
+```
+
+RMSE will highly correlate if classifiers have similar performance.
+
+
+## Use on SLURM cluster
+
+In order to use `caret` on a cluster, it suffices to create a cluster and to register it for the `doParallel` package before calling `train`:
+
+```{R eval=FALSE}
+library(slurmR)
+cl = makeSlurmCluster(84)
+
+library(doParallel)
+registerDoParallel(cl)
+```
+
+At the end, do not forget to clean up:
+
+```{r eval = FALSE}
+stopCluster(cl)
+```
+
