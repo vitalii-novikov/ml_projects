@@ -313,6 +313,8 @@ vt[c("node", "cross_entropy_avg", "accuracy_avg")] %>%
 ```
 This table represents lowest cross_entropy_avg for models. 
 
+The neural network with hyperparametres (4,3) shows the lowest cross entropy loss. This model will be used for further steps.
+
 ```{r}
 plot(1:length(vt$node), vt$cross_entropy_avg, type = "b", 
      xlab = "Node", ylab = "Cross Entropy", 
@@ -331,14 +333,20 @@ plot(1:length(vt$node), vt$accuracy_avg, type = "b",
 axis(1, at = 1:length(vt$node), labels = vt$node)
 ```
 
+The accuracy of predictions is better for 1 hidden layer neural network, but the cross entropy loss for these networks were larger than network with 4 and 3 neurons on hidden levels. But (4,3) nn shows average accuracy within networks with 2 hidden layers.
+
+
 ```{r}
 set.seed(2)
-plot(x=jitter(vt$accuracy_avg), y=vt$cross_entropy_avg)
+plot(x=vt$accuracy_avg, y=vt$cross_entropy_avg)
 set.seed(2)
-text(x = jitter(vt$accuracy_avg), y = vt$cross_entropy_avg, labels = vt$node, pos = 3, cex = 0.5)
+text(x = vt$accuracy_avg, y = vt$cross_entropy_avg, labels = vt$node, pos = 3, cex = 0.5)
 ```
 
-The neural network with hyperparametres (4,3) shows the lowest cross entropy loss. This model will be used for further steps.
+Another possible neural network, that could be good choice for using is nn with 1 hidden layer and 4 neurons on this layer, because it is the closest to right bottom corner, which means that the model shows good balance of accuracy and loss function.
+
+But we would like to choose the model with the lowest cross entropy loss, so the (4,3) is a winning model.
+
 
 # Final model
 
@@ -372,6 +380,13 @@ table(testD$diagnosis, prediction_label)
 The confusion matrix shows that the model performed with flying colors, because there is no false negative and false positive predictions
 ```{r}
 print(paste0("Accuracy: ",accuracy,"%"))
-print(paste0("Cross Entropy: ",round(cross_entropy,3)))
+print(paste0("Cross Entropy: ",round(cross_entropy,4)))
 ```
 
+So, the accuracy is 100%, while the loss is very small comparing to models that were on previous steps.
+
+```{r}
+plot(nn, col.hidden = "orange", fontsize = 10, information=F)
+```
+
+The black lines show the connections between each layer and the weights on each connection while the blue lines show the bias term added in each step. Black neurons on the left side is input, while Black neurons on the right side is output. Orange neurons are part of hidden layers.
