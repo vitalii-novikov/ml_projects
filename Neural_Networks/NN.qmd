@@ -2,6 +2,7 @@
 title: "NeuralNetwork_Novikov"
 author: "Vitalii Novikov"
 format: pdf
+toc: true
 ---
 
 
@@ -21,29 +22,33 @@ library(plyr)
 
 # Starting point
 
-We would like to use kNN method for recognizing the type of iris (class label *versicolor* or *virginica*). The predictors include:
-
-- Sepal.Length
-- Sepal.Width
-- Petal.Length
--Petal.Width
-
-The objective of the analysis is to find a model that can be used to predict the type of the flower based on features. Also we will use extensive search approach to identify a good k for the task.
+We would like to use Neural Network to predict the diagnosis (Benign or Malignant based on 10 features: 
+- radius (mean of distances from center to points on the perimeter)
+- texture (standard deviation of gray-scale values)
+- perimeter
+- area
+- smoothness (local variation in radius lengths)
+- compactness (perimeter^2 / area - 1.0)
+- concavity (severity of concave portions of the contour)
+- concave points (number of concave portions of the contour)
+- symmetry
+- fractal dimension ("coastline approximation" - 1)
 
 
 # Data management
 
+First the data is collected from package "mlbench".
 ```{r}
 data("BreastCancer", package = "mlbench")
 BreastCancer |> head()
 ```
-Wrong dataset
+But it is wrong dataset.
 
 Get another:
 
 ```{r}
 dat <- read.csv("data.csv")
-head(dat)
+glimpse(dat)
 ```
 
 
@@ -61,7 +66,7 @@ clean_data <- mutate(clean_data,
   diagnosis = case_match(diagnosis, "M" ~ "malignant", "B"~ "benign")
    ) %>% mutate_if(is.character, as.factor)
 #clean_data[['diagnosis']] <- as.factor(clean_data[['diagnosis']])
-knitr::kable(clean_data |> head(2))
+clean_data |> head(2)
 ```
 
 ```{r}
@@ -211,6 +216,7 @@ It is hard to interpret this number, because it is not a direct loss function li
 
 First, the 5 fold stratified data split is created.
 ```{r}
+set.seed(321)
 folds <- createFolds(trainD$diagnosis, k = 5, list = TRUE, returnTrain = FALSE)
 ```
 
@@ -279,8 +285,6 @@ for(n1 in possible_neurons){
       check = as.numeric(test_fold$diagnosis) == max.col(pred)
       accuracy_list[i] = (sum(check)/nrow(test_fold))*100
     }
-    print(cross_entropy_list[4])
-    print(cross_entropy_list[5])
     validation_table[nrow(validation_table) + 1, ] <- c(2, n1, n2, 
                                                       cross_entropy_list, 
                                                       mean(cross_entropy_list), 
@@ -290,11 +294,11 @@ for(n1 in possible_neurons){
 
 apply(validation_table,2 ,function(x) round(x,2))
 ```
-Somehow cross entropy for the 5th fold is 0
+Somehow cross entropy for the 4th fold is 0
 
 Recheck it:
 ```{r}
-validation_table$ce5
+validation_table$ce4
 ```
 
 It is not 0 in most cases, but very close to zero.
@@ -313,7 +317,7 @@ vt[c("node", "cross_entropy_avg", "accuracy_avg")] %>%
 ```
 This table represents lowest cross_entropy_avg for models. 
 
-The neural network with hyperparametres (4,3) shows the lowest cross entropy loss. This model will be used for further steps.
+The neural network with hyperparametres (4,4) shows the lowest cross entropy loss. This model will be used for further steps.
 
 ```{r}
 plot(1:length(vt$node), vt$cross_entropy_avg, type = "b", 
@@ -333,19 +337,17 @@ plot(1:length(vt$node), vt$accuracy_avg, type = "b",
 axis(1, at = 1:length(vt$node), labels = vt$node)
 ```
 
-The accuracy of predictions is better for 1 hidden layer neural network, but the cross entropy loss for these networks were larger than network with 4 and 3 neurons on hidden levels. But (4,3) nn shows average accuracy within networks with 2 hidden layers.
+The accuracy flactuates between 96 and 97 in most cases, but for (3,4) and (4,3) it becomes larger then 97, whereas (4,4) nn shows the lowest accuracy within networks (96.05).
 
 
 ```{r}
-set.seed(2)
 plot(x=vt$accuracy_avg, y=vt$cross_entropy_avg)
-set.seed(2)
-text(x = vt$accuracy_avg, y = vt$cross_entropy_avg, labels = vt$node, pos = 3, cex = 0.5)
+text(x = vt$accuracy_avg, y = vt$cross_entropy_avg, labels = vt$node, pos = 2, cex = 0.5)
 ```
 
-Another possible neural network, that could be good choice for using is nn with 1 hidden layer and 4 neurons on this layer, because it is the closest to right bottom corner, which means that the model shows good balance of accuracy and loss function.
+Another possible neural network, that could be good choice for using is nn with 2 hidden layers and (4,3) neurons on these layers, because it is the closest to right bottom corner, which means that the model shows good balance of accuracy and loss function.
 
-But we would like to choose the model with the lowest cross entropy loss, so the (4,3) is a winning model.
+But we would like to choose the model with the lowest cross entropy loss, so the (4,4) is a winning model.
 
 
 # Final model
@@ -356,7 +358,7 @@ Now the whole trainD set is used for training.
 
 ```{r}
 set.seed(2)
-nn <- neuralnet(diagnosis ~ . , data = testD, hidden = c(4,3), linear.output=FALSE)
+nn <- neuralnet(diagnosis ~ . , data = testD, hidden = c(4,4), linear.output=FALSE)
 pred <- neuralnet::compute(nn, testD[, -11])$net.result
 #ce
 true_one_hot <- testD["diagnosis"] %>% 
@@ -383,12 +385,15 @@ print(paste0("Accuracy: ",accuracy,"%"))
 print(paste0("Cross Entropy: ",round(cross_entropy,4)))
 ```
 
-So, the accuracy is 100%, while the loss is very small comparing to models that were on previous steps.
+So, the accuracy is 100%, while the loss is very comparing to models that were on previous steps.
 
 ## Model vizualization
 
 ```{r}
-plot(nn, col.hidden = "orange", fontsize = 10, information=F)
+
+png("neuralnet_plot.png")
+plot(nn, col.hidden = "orange", fontsize = 10, information.pos = 0.25)
+knitr::include_graphics("neuralnet_plot.png")
 ```
 
 The black lines show the connections between each layer and the weights on each connection, while the blue lines show the bias term added at each step. The black neurons on the left are inputs, and the black neurons on the right are outputs. Orange neurons are part of the hidden layers.
