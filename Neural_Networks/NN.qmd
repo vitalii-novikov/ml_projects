@@ -350,7 +350,7 @@ But we would like to choose the model with the lowest cross entropy loss, so the
 
 # Final model
 
-## Train model
+## Train & test model
 
 Now the whole trainD set is used for training.
 
@@ -385,8 +385,22 @@ print(paste0("Cross Entropy: ",round(cross_entropy,4)))
 
 So, the accuracy is 100%, while the loss is very small comparing to models that were on previous steps.
 
+## Model vizualization
+
 ```{r}
 plot(nn, col.hidden = "orange", fontsize = 10, information=F)
 ```
 
-The black lines show the connections between each layer and the weights on each connection while the blue lines show the bias term added in each step. Black neurons on the left side is input, while Black neurons on the right side is output. Orange neurons are part of hidden layers.
+The black lines show the connections between each layer and the weights on each connection, while the blue lines show the bias term added at each step. The black neurons on the left are inputs, and the black neurons on the right are outputs. Orange neurons are part of the hidden layers.
+
+# Problem of overfitting
+
+Overfitting means a neural network performs well on training data, poorly on unseen data. It memorizes, not generalizes. The detection of it can be via comparing training and validation performance, because a large gap between them indicates overfitting. 
+Some ways to prevent overfitting: 
+- Early stopping (of course with monitoring validation loss) 
+- Regularization (L1/L2), but it reduces model complexity
+- Dropinng randomly disables neurons
+- Expandding the dataset to enhance the variety of training data.
+
+There is no problem with overfitting in the final model, but sometimes neural networks tend to be overfited especially if the data is not balanced. In this case the balance of resulting class is 37/63, which is not so bad. Also we used stratified split to perform as good as possible. 
+
