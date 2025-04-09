@@ -1,0 +1,277 @@
+---
+title: "Random Forests"
+author: "Vitalii Novikov"
+format: pdf
+toc: true
+---
+
+# Libraries
+
+```{r}
+#| code-summary: Libraries
+#| code-fold: true
+library <- function(...) {suppressPackageStartupMessages(base::library(...))}
+if (!require(caret)) install.packages("caret"); library(caret)
+if (!require(mlbench)) install.packages("mlbench"); library(mlbench)
+if (!require(dplyr)) install.packages("dplyr"); library(dplyr)
+library(plyr) 
+library(randomForest)
+library(pROC)
+
+```
+
+# Starting point
+
+We would like to use Random Forests to predict the diagnosis (Benign or Malignant based on 10 features: 
+- radius (mean of distances from center to points on the perimeter)
+- texture (standard deviation of gray-scale values)
+- perimeter
+- area
+- smoothness (local variation in radius lengths)
+- compactness (perimeter^2 / area - 1.0)
+- concavity (severity of concave portions of the contour)
+- concave points (number of concave portions of the contour)
+- symmetry
+- fractal dimension ("coastline approximation" - 1)
+
+
+# Data management
+```{r}
+dat <- read.csv("data.csv")
+glimpse(dat)
+```
+
+
+```{r}
+nrow(dat)
+```
+
+This dataset include 569 observations. We will only use the “worst-features” for creating neural network. 
+
+## Pick useful predictors
+
+```{r}
+clean_data <- as_tibble(dat[c(2,23:32)])
+clean_data <- mutate(clean_data,
+  diagnosis = case_match(diagnosis, "M" ~ "malignant", "B"~ "benign")
+   ) %>% mutate(diagnosis = factor(diagnosis))
+   # %>% mutate(diagnosis = relevel(diagnosis, ref = "malignant"))
+#clean_data[['diagnosis']] <- as.factor(clean_data[['diagnosis']])
+clean_data |> head(2)
+```
+
+```{r}
+clean_data |> apply(2, function(x) sum(is.na(x)))
+```
+There is no missing data, good.
+
+
+## Stratified data set
+
+### Using 'sample' function
+
+```{r}
+set.seed(230)
+index <- sample(1:nrow(clean_data),round(0.8*nrow(clean_data)))
+train_data <- clean_data[index,]
+test_data <- clean_data[-index,]
+
+pie_with_percentages <- function(diag_list, main = "Diagnosis", round = 1) {
+  diag_table <- table(diag_list)
+  diag_percentages <- prop.table(diag_table) * 100
+  labels <- paste(names(diag_table), "\n", round(diag_percentages, round), "%")
+  return(pie(diag_table, labels = labels, main = main))
+}
+
+layout(matrix(c(1,2,3), nrow = 1), respect = TRUE)
+pie_with_percentages(train_data$diagnosis, main = "train_data")
+pie_with_percentages(test_data$diagnosis, main = "test_data")
+pie_with_percentages(clean_data$diagnosis, main = "original_data")
+layout(1)
+```
+The test data show slightly lowest proportion of malignant then both train and original data, but it is still very close to actual picture.
+
+### Using caret library
+
+```{r}
+set.seed(123)
+index_2 <- createDataPartition(clean_data$diagnosis, p = 0.8, list = FALSE)
+
+train_data_2 <- clean_data[index_2,]
+test_data_2 <- clean_data[-index_2,]
+
+layout(matrix(c(1,2,3), nrow = 1), respect = TRUE)
+pie_with_percentages(train_data_2$diagnosis, main = "train_data_2", round = 2)
+pie_with_percentages(test_data_2$diagnosis, main = "test_data_2", round = 2)
+pie_with_percentages(clean_data$diagnosis, main = "original_data", round = 2)
+```
+In this case we got really stratified train and test split of the data, because the proportions of
+classes are almost the same in each dataset. For further steps we will use this split of the data.
+
+```{r}
+trainD <- train_data_2
+testD <- test_data_2
+
+split_description <- t(rbind(
+  data.frame("trainD" = nrow(trainD), "testD" = nrow(testD)),
+  c(round(nrow(trainD)/nrow(clean_data)*100,2), 
+    round(nrow(testD)/nrow(clean_data)*100,2))
+)) 
+colnames(split_description) <- c("nrow","percentage (%)")
+split_description
+```
+
+The trainD include 456 rows, which is 80.14% of the original dataset.
+
+
+
+## Normalize the data
+
+All predictors have their own scales. We should perform min-max-normalization.
+
+```{r}
+trainD |> summary()
+```
+### Scaled train dataset
+
+```{r}
+maxs <- apply(trainD[-1], 2, max) 
+mins <- apply(trainD[-1], 2, min)
+
+scaled_trainD <- scale(trainD[-1], center = mins, scale = maxs - mins) %>%
+  cbind(trainD[1])
+
+summary(scaled_trainD)
+```
+Now we have all predictors in the same scale.
+
+### Scaled test dataset
+
+```{r}
+maxs <- apply(testD[-1], 2, max) 
+mins <- apply(testD[-1], 2, min)
+
+scaled_testD <- scale(testD[-1], center = mins, scale = maxs - mins) %>%
+  cbind(testD[1])
+
+```
+
+# Modeling part
+
+### First Random Forest
+
+The initial model include 20 trees and has 3 variables randomly sampled as candidates at each split (floor(sqrt(10)) = 3).
+
+```{r}
+set.seed(333)
+rf_model <- randomForest(diagnosis ~ ., 
+                         data = scaled_trainD, 
+                         ntree = 20,              
+                         mtry = floor(sqrt(10))
+                         )  
+```
+ 
+
+```{r}
+
+predictions <- predict(rf_model, newdata = scaled_testD)
+prob_predictions <- predict(rf_model, newdata = scaled_testD, type = "prob")[,2]
+print(confusionMatrix(predictions, scaled_testD$diagnosis, mode = "prec_recall"))
+```
+
+The initial model performed not so bad, just 5 observations were wrong classified. Therefore the Accuracy  is about 96%.
+
+
+
+## Hyperparameters tuning
+
+As Hyperparameters we have:
+1) number of trees in the forest
+2) number of variables randomly sampled as candidates at each split (it is recommended to take around sqrt(N_predictors), but it is interesting to explore how it affect the model)
+
+```{r}
+set.seed(1)
+n_trees <- c(1:12,seq(15, 100, by = 5))
+error_df <- data.frame(Trees = numeric(), NVariables = factor(), Error = numeric())
+
+control <- trainControl(method = "cv", number = 10, classProbs = TRUE, savePredictions = "final")
+
+for (ntree in n_trees) {
+  for (nv_count in 2:5) {## number of variables randomly sampled as candidates at each split
+    rf_model <- train(diagnosis ~ ., data = scaled_trainD, 
+                      method = "rf",
+                      trControl = control,
+                      tuneGrid = data.frame(mtry = nv_count),
+                      ntree = ntree)
+    # Collect cross-validated errors
+    error_df <- rbind(error_df, 
+                      data.frame(Trees = ntree, 
+                                 NVariables = as.character(nv_count), 
+                                 Error = 1 - max(rf_model$results$Accuracy)))
+}}
+
+
+ggplot(error_df, aes(x = Trees, y = Error,  color = NVariables)) +
+  geom_point(alpha = 0.65) +
+  geom_line(alpha = 0.65) +
+  #scale_x_log10()+ 
+  labs(title = "Random Forests Errors",
+       x = "Number of Trees",
+       y = "Cross-Validation Error") 
+
+```
+
+There is no special patterns in differences between number of variables sampled as candidates at each split. May be "3" is a little bit more stable, but still the errors line fluctuates between 0.04 and 0.05.
+
+To easier interpret the start of the plateau we should use log-transformed x-axis.
+
+```{r}
+ggplot(error_df, aes(x = Trees, y = Error,  color = NVariables)) +
+  geom_point(alpha = 0.65) +
+  geom_line(alpha = 0.65) +
+  scale_x_log10()+ 
+  labs(title = "Random Forests Errors (log transformed)",
+       x = "Number of Trees",
+       y = "Cross-Validation Error") 
+
+```
+
+The plateau begins around the number of trees equals 5, but there is a strange increase of errors for all models when number of trees equals 8. 
+
+When the model have 5 trees, the lowest error has the model with number of sampled variables = 3. Therefore, this model will be used in further steps.
+
+## Final Model
+
+As described before, cross validation tell us that the appropriate number of trees is 5 and the appropriate number of sampled variables is 3. 
+
+```{r}
+set.seed(55)
+final_model <- randomForest(diagnosis ~ ., 
+                         data = scaled_trainD, 
+                         ntree = 5,              
+                         mtry = 3)
+
+predictions <- predict(final_model, newdata = scaled_testD)
+prob_predictions <- predict(final_model, newdata = scaled_testD, type = "prob")[,2]
+print(confusionMatrix(predictions, scaled_testD$diagnosis, mode = "prec_recall"))
+```
+
+The final model performed not bad, just 3 observations were wrong classified. Therefore the Balanced Accuracy around 97%.
+According to confusion matrix in 2 cases the malignant were classified as benign, which is bad. 
+
+```{r}
+roc_obj <- roc(scaled_testD$diagnosis, prob_predictions,
+               levels = c("benign", "malignant"))
+
+plot(roc_obj, col = "darkblue", main = "ROC Curve")
+text(0.2, 0.2, labels = paste0("AUC = ", round(auc(roc_obj), 3)), cex = 1.2)
+```
+
+**ROC Curve** looks almost perfect with AUC = 0.994. There could be some improvements, because the TPR (sensitivity) become 1 at about 0.8 of specificity.
+
+## Possible improvements
+
+The final model is already quite good in terms of detecting "malignant". If we want to detect all of the malignant items we can change the threshold to achieve the appropriate results, but it can lead to increase of False Positive predictions, which sometimes is ok. Also, the possible solution could be the "unsure" status for some range of probabilities. But for better calculating of percentages it may be necessary to use larger number of trees in the random forest.
+
+And of course increasing of the number of observations in the initial dataset can help to train better model.
+
