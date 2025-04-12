@@ -1,0 +1,574 @@
+---
+title: "Feature Engineering with R"
+author: "David Meyer"
+date: "3.4.2024"
+output:
+  pdf_document: 
+    toc: yes
+    number_sections: yes
+    latex_engine: xelatex
+---
+
+```{r echo = TRUE, warning = FALSE, error = FALSE, message = FALSE}
+library(e1071)
+library(caret)
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+
+library(arules)
+library(AER)
+library(naniar)
+library(corrplot)
+library(tm)
+library(randomForest)
+library(rpart)
+library(partykit)
+library(pls)
+library(glmnet)
+library(pdp)
+library(vip)
+```
+
+# Feature Transformation
+
+```{r}
+data("USSeatBelts", package = "AER")
+summary(USSeatBelts)
+```
+
+## Standardizing
+
+```{r}
+pr = caret::preProcess(USSeatBelts, c("center", "scale"))
+pr
+```
+
+```{r}
+num = sapply(USSeatBelts, is.numeric)
+summary(predict(pr, USSeatBelts)[num])
+```
+
+## Normalizing
+
+```{r}
+pr = preProcess(USSeatBelts, "range")
+pr
+```
+
+```{r}
+summary(predict(pr, USSeatBelts)[num])
+```
+
+## Imputing Missing Values
+
+Explore influence of categorical features
+
+```{r}
+# library(tidyverse)
+USSeatBelts %>% 
+  mutate(NAs = as.factor(is.na(USSeatBelts$seatbelt))) %>% 
+  select(where(is.factor)) %>% 
+  pivot_longer(-NAs) %>% 
+  
+  ggplot(aes(x = value, fill = NAs)) + 
+  geom_bar(position = "fill") + 
+  facet_wrap(~ name, ncol = 2, scale = "free") +
+  theme(legend.position = c(0.9, 0.1))
+```
+
+Influence of metric features:
+
+```{r}
+# library(naniar)
+USSeatBelts %>% 
+  select(where(is.numeric)) %>% 
+  pivot_longer(-seatbelt) %>% 
+  
+  ggplot(aes(x = seatbelt, y = value)) + 
+  naniar::geom_miss_point() + facet_wrap(~ name, scale = "free") +
+  theme(legend.position = "bottom")
+```
+
+Imputation using bagged trees:
+
+```{r}
+pr = preProcess(USSeatBelts, "bagImpute")
+pr
+complete = predict(pr, USSeatBelts)
+any(is.na(complete$seatbelt))
+```
+
+Alternatives: 
+
+- `medianImpute` (only for missing completely at random!), 
+- `knnImpute` (faster; but only recommended with metric features)
+
+## Coding Categorical Variables
+
+### One-Hot Encoding
+
+```{r}
+encode = caret::dummyVars(~ age + enforce, USSeatBelts,
+                   levelsOnly = TRUE)
+encode
+```
+
+```{r}
+dataEncoded = predict(encode, USSeatBelts)
+head(dataEncoded, 15)
+```
+
+Simpler function for single factors:
+
+```{r}
+head(caret::class2ind(USSeatBelts$enforce), 15)
+```
+
+_Note:_
+
+For linear regression, we need to compute: $\beta = (X'X)^{-1}X'y$, but if $X$ is not of full rank, the correlation matrix is singular and cannot be inverted:
+
+```{r eval=FALSE}
+solve(crossprod(cbind(Intercept = 1, dataEncoded)))
+```
+
+### Full-Rank-Encoding
+
+Full-rank encoding will suppress the first level:
+
+```{r}
+encode = dummyVars(~ age + enforce, USSeatBelts,
+                   levelsOnly = TRUE, 
+                   fullRank = TRUE)
+encode
+```
+
+```{r}
+head(predict(encode, USSeatBelts), 15)
+```
+
+_Note:_
+
+This is was R methods like `lm` do using the formula interface, by internally calling `model.matrix()`:
+
+```{r}
+head(model.matrix(~ age + enforce, USSeatBelts))
+```
+
+# Feature Deletion
+
+## Near-zero Features
+
+```{r}
+caret::nearZeroVar(USSeatBelts)
+```
+
+Other example:
+
+```{r}
+data(AdultUCI, package = "arules")
+summary(AdultUCI)
+```
+
+```{r}
+nearZeroVar(AdultUCI, names = T)
+hist(AdultUCI$`capital-gain`)
+```
+
+Again, this can be done using `preProcess()` (although factors are ignored):
+
+```{r}
+pr = preProcess(AdultUCI, "nzv")
+pr
+```
+
+```{r eval = FALSE}
+predict(pr, AdultUCI)
+```
+
+
+## Correlated Features
+
+Show feature correlations:
+
+```{r}
+corr = cor(USSeatBelts[num], use = "pairwise")
+corr
+corrplot::corrplot.mixed(corr)
+```
+
+
+```{r}
+caret::findCorrelation(corr, cutoff = 0.7, names = TRUE, verbose = T)
+```
+
+`income` highly correlates with `fatalities`. Since `income` has the higher average correlation with other features, it is suggested for removal.
+
+`preProcess` also has a `corr` method to remove the most correlating features.
+
+## All in one
+
+All transformations can be done in one step. Note, however, that `preProcess()` ignores all categorical variables (but will use them for imputation).
+
+```{r}
+pr = preProcess(USSeatBelts, c("center", "scale", "bagImpute", "nzv", "corr"), cutoff = 0.7)
+pr
+
+prdata = predict(pr, USSeatBelts)
+head(prdata)
+```
+
+# Feature Extraction
+
+## PCA
+
+Exclude seatbelt from PCA (= target variable); keep as many PCs to keep at least 80% of variance
+
+```{r}
+pr = preProcess(prdata[,-5], "pca", thresh = 0.80)
+pr
+```
+
+```{r}
+pr$rotation
+```
+
+
+```{r}
+head(predict(pr, prdata))
+```
+
+## Dates
+
+The "GoldSilver" data set is a multiple time series, with implicit date information:
+
+```{r}
+data("GoldSilver", package = "AER")
+head(GoldSilver)
+```
+
+Make this an explicit Date column in a tibble:
+
+```{r}
+GoldSilver %>% 
+  as_tibble(rownames = "Date") %>% 
+  mutate(Date = as.Date(Date)) -> GS
+head(GS)
+```
+Maybe generate more date-related columns, depending on later usage:
+
+```{r}
+# library(lubridate)
+GS %>% 
+  mutate(Day = day(Date),
+         Month = month(Date),
+         MonthName = month(Date, label = TRUE, locale = "C"), ## C-locale -> english labels
+         Year = year(Date),
+         Quarter = quarter(Date),
+         Semester = semester(Date),
+         Week = week(Date),
+         YearDay = yday(Date),
+         QuarterDay = qday(Date),
+         WeekDay = wday(Date, label = T, locale = "C"),
+         Weekend = WeekDay %in% c("Sat", "Sun")) %>% 
+  slice_head(n = 10)
+```
+
+## Text
+
+Create Document Corpus from raw data:
+
+```{r}
+# library(tm)
+x = read.table("/home/meyer/AIDA/Lehrunterlagen/Machine Learning/ML_MDS2/Lecture 6 - Feature Engineering/Data/SMSSpamCollection.txt", sep = "\t")
+x[1:2,]
+vs = VectorSource(x[[2]])
+corp = VCorpus(vs)
+meta(corp, "label", "local") = x[[1]]
+meta(corp[[1]])
+inspect(corp[[1]])
+```
+
+Apply some transformations to normalize the words to "tokens":
+
+```{r}
+getTransformations()
+corp %>% 
+  tm_map(removeNumbers) %>% 
+  tm_map(removePunctuation) %>% 
+  tm_map(stripWhitespace) %>% 
+  tm_map(removeWords, stopwords("english")) %>% 
+  tm_map(stemDocument) %>% 
+  tm_map(content_transformer(tolower)) -> corp2
+
+## compare effect:
+inspect(corp[[1]])
+inspect(corp2[[1]])
+
+dtm = DocumentTermMatrix(corp2) 
+```
+
+Shorter:
+
+```{r}
+dtm = DocumentTermMatrix(corp, 
+                         control = list(stopwords = TRUE,
+                                        removeNumbers = TRUE,
+                                        removePunctuation = TRUE,
+                                        stemming = TRUE))
+dim(dtm)
+```
+
+Note that `dtm` is a *sparse* matrix (many 0 entries) and stored in a compressed format.
+
+Find most frequent terms: 
+
+```{r}
+ft = findFreqTerms(dtm, 50) # at least 50 occurences
+length(ft)
+head(ft)
+```
+
+and create data frame:
+
+```{r}
+mat = as.matrix(dtm[,ft]) > 0
+mat[1:5,1:10]
+spam_data = data.frame(spam = as.factor(x[[1]]), mat)
+```
+
+Create NaiveBayes-model:
+
+```{r}
+# library(e1071)
+m = e1071::naiveBayes(spam ~ ., data = spam_data, laplace = 1)
+```
+
+Assess training error:
+
+```{r}
+caret::confusionMatrix(predict(m, spam_data), as.factor(spam_data$spam), positive = "spam")
+```
+
+Better evaluation on test data using resampling:
+
+```{r, warning=FALSE}
+tr = train(spam ~ ., data = spam_data, method = "naive_bayes", 
+           tuneGrid = data.frame(laplace = 1, usekernel = FALSE, adjust = FALSE))
+
+confusionMatrix(tr) ## average confusion matrix, no statistics because of comma values
+
+## workaround
+confusionMatrix(confusionMatrix(tr)$table, positive = "spam")
+```
+
+Very high false-positive rate (= low specificity). Better performance using dictionaries, weighting of features, other models etc.
+
+# Feature Evaluation
+
+## Simple, model-independent Feature Importance Ranking Measures (FIRM)
+
+### Scoring methods for classification
+
+Class-specific AUC-Values.
+
+```{r}
+caret::filterVarImp(iris[,-5], iris$Species)
+```
+Note that for more than two classes, the AUC for all pairwise combinations are computed and the best relevant AUC returned.
+
+### Scoring methods for regression
+
+By default, t-statistic of univariate regression models:
+
+```{r}
+filterVarImp(prdata[,-5], prdata$seatbelt) %>% arrange(desc(Overall))
+```
+(Note that state is treated as numeric variable which is non-sensical - should be binary-coded!)
+
+Compare, for example, the value for the numeric predictor `income`:
+
+```{r}
+coef(summary(lm(seatbelt ~ miles, data = prdata)))
+```
+
+The coefficient corresponds to the standardized covariance:
+
+```{r}
+cov(prdata$seatbelt, prdata$miles)
+```
+
+For binary predictors, the t-statistic corresponds really to the standardized difference of group means, i.e. the classical t-test:
+
+```{r}
+coef(summary(lm(seatbelt ~ speed65, data = prdata)))
+```
+
+```{r}
+t.test(seatbelt ~ speed65, data = prdata, var.equal = TRUE)
+```
+
+## Model-agnostic approaches
+
+Generic approaches based on _any_ predictions (ignoring the model type).
+
+### Individual Conditional Expectation (ICE) / Partial Dependency Plots (PDP)
+
+ICE-Plots: choose a subsample. For _each_ case, replace the values of the investigated feature by a sequence of values within the data range and predict the target values.
+
+PDP-Plot: average of all ICE-curves.
+
+
+```{r message=FALSE, warning = FALSE}
+library(nnet)
+model = nnet(seatbelt ~ age + speed65 + miles, 
+             data = prdata, linout = TRUE, size = 100)
+
+autoplot(partial(model, pred.var = "age", ice = TRUE), alpha = 0.1)
+autoplot(partial(model, pred.var = "miles", ice = TRUE), alpha = 0.1)
+autoplot(partial(model, pred.var = "speed65", ice = TRUE), alpha = 0.1)
+
+autoplot(partial(model, pred.var = c("speed65", "age")))
+autoplot(partial(model, pred.var = c("miles", "age")))
+```
+
+Importance measure: standard deviation of PDP-values (or mean of standard deviations of ICE-values; better for correlated data)
+
+```{r}
+vi(model, method = "firm")
+vi(model, method = "firm", ice = TRUE)
+vip(model, method = "firm")
+```
+
+### Permutation-based measures
+
+Compute performance before and after permuting values of some feature. 
+Importance = difference.
+
+```{r}
+vi(model, method = "permute", target = "seatbelt", metric = "rmse",
+   pred_wrapper = predict)
+```
+
+## Model-based measures
+
+### Random Forest
+
+Decrease of Gini-Values, averaged over all trees.
+
+```{r}
+## library(randomForest)
+rf = randomForest(seatbelt ~ ., data = prdata, importance = TRUE)
+vi(rf, type = 2)
+vip(rf, type = 2)
+```
+
+### Neural Networks
+
+Product of input and output weight, summed over all hidden nodes.
+
+```{r}
+vi(model)
+vip(model)
+```
+
+# Feature Selection
+
+## Filter Methods
+
+Simple feature selection: For regression, simple spline regression is used. The score is the p-value of the regression parameter. After that, a linear model is fit and evaluated:
+
+```{r, warning=FALSE}
+sb = caret::sbf(seatbelt ~ . - state - year, data = prdata, 
+                sbfControl = sbfControl(functions = lmSBF))
+summary(sb$fit)
+sb
+```
+
+Note that some parameters are not significant - method did not identify all irrelevant features.
+
+## Wrapper Methods
+
+Recursive Feature selection with subsequent linear model:
+
+```{r, warning=FALSE}
+rfs = caret::rfe(seatbelt ~ . - state - year, data = prdata, 
+        sizes = c(1:10, 20, 30, 40, 50, 60),
+        rfeControl = rfeControl(functions = lmFuncs))
+rfs
+```
+
+
+```{r}
+plot(rfs)
+```
+
+```{r}
+summary(rfs$fit)
+```
+
+## Statistical Model Selection
+
+```{r}
+full_model = lm(seatbelt ~ . -year -state, data = USSeatBelts)
+summary(full_model)
+```
+
+Some coefficients are not significant, but due to multi-colinearity (correlation of some features with others), we cannot simply remove them. `step` tries to add/remove them in order to maximize the AIC statistic:
+
+```{r}
+best_model = step(full_model)
+summary(best_model)
+```
+
+```{r}
+anova(best_model, full_model)
+```
+
+The two models are not significantly different, so the smaller model is better.
+
+# Outlook: Models with Feature Selection
+
+## Tree Models
+
+```{r fig.width = 12, warning=FALSE}
+# library(rpart)
+# library(partykit)
+rp = rpart::rpart(seatbelt ~ ., data = prdata[,-(1:2)])
+plot(partykit::as.party(rp))
+```
+
+
+## PC-Regression
+
+```{r}
+# library(pls)
+PCR_model = pcr(seatbelt ~ . - state - year, data = prdata)
+summary(PCR_model)
+```
+
+coefficients:
+
+```{r}
+ # Choose model with 6 PCs - expains ~70% variance of seatbelt
+coef(PCR_model, intercept = TRUE, ncomp  = 5)
+```
+
+## Partial Least Squares
+
+Similar, but also considers correlation with response in creating the components:
+
+```{r}
+# library(pls)
+PLS_model = plsr(seatbelt ~ . - state - year, data = prdata)
+summary(PLS_model)
+```
+
+Coefficients:
+
+```{r}
+## Choose model with 4 components (explains ~79% of variance of seatbelt)
+coef(PLS_model, intercept = TRUE, ncomp = 4)
+```
+
